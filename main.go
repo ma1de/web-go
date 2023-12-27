@@ -1,92 +1,170 @@
 package main
 
 import (
-    "fmt"
-    "net"
-    "strings"
-    "strconv"
-    "encoding/json"
+	"encoding/json"
+	"log"
+	"net"
+	"os"
+	"strings"
+	"time"
 )
 
-type Connection struct {
-    path string
-    request_type string
-    params map[string]string
+type User struct {
+  ip net.Addr
+  name string
+  connected int64
 }
 
-var connections []Connection = make([]Connection, 0)
+var users []User
+var connections []net.Conn
 
-func get_path(request string) string {
-    return strings.Split(request, " ")[1]
+func containsUser(ip net.Addr) bool {
+  found := false
+
+  for _, us := range users {
+    found = us.ip == ip
+  }
+
+  return found
 }
 
-func get_request_type(request string) string {
-    return strings.Split(request, " ")[0]
+func containsUserName(name string) bool {
+  found := false
+  
+  for _, us := range users {
+    found = us.name == name
+  }
+
+  return found
 }
 
-func get_params(request string) map[string]string {
-    params := make(map[string]string)
+func getHeaders(req string) map[string]string {
+  headers := make(map[string]string, 0)
 
-    values := strings.Split(request, "\n")
-    values = append(values[:0], values[1:]...)
+  vals := strings.Split(req, "\n")
+  vals = append(vals[:0], vals[1:]...)
 
-    for _,value := range values {
-        split := strings.Split(value, ":")
+  for _, val := range vals {
+    split := strings.Split(val, ":")
 
-        if len(split) == 0 || len(split) < 2 {
-            continue
-        }
-
-        params[split[0]] = strings.Replace(split[1], "\r", "",  -1)
+    if len(split) == 0 || len(split) < 2 {
+      continue
     }
 
-    return params
+    headers[split[0]] = split[1]
+  }
+
+  return headers
 }
 
-func answer(msg string, code int,  connection net.Conn) {
-    new_msg := "HTTP/1.1 " + strconv.Itoa(code) + "\nContent-Type: text/plain\nContent-Length: " + strconv.Itoa(len(msg)) + "\n\n" + msg
-    connection.Write([]byte(new_msg))
+func containsHeader(headers map[string]string, header string) bool {
+  found := false
+
+  for key, _ := range headers {
+    found = header == key
+  }
+
+  return found
 }
 
-func handle_connection(connection net.Conn) {
-    buffer := make([]byte, 10240)
-    connection.Read(buffer)
+func getHeader(headers map[string]string, header string) string {
+  head := ""
 
-    path := get_path(string(buffer))
-    request_type := get_request_type(string(buffer))
-    params := get_params(string(buffer))
-
-    json_bytes, err := json.Marshal(params)
-
-    if err != nil {
-        return
+  for key, _ := range headers {
+    if key == header {
+      head = key
     }
+  }
 
-    answer(path + "\n" + request_type + "\n" + string(json_bytes), 200, connection)
+  return head
+}
 
-    con := Connection {path, request_type, params}
-    connections = append(connections, con)
+func handleConnection(conn net.Conn) {
+  if containsUser(conn.LocalAddr()) {
+    conn.Write([]byte("You are already connected to the server"))
+    return 
+  }
 
-    connection.Close()
+  var user User
+  user.ip = conn.LocalAddr()
+  user.connected = time.Now().UnixNano() / int64(time.Millisecond)
+
+  buffer := make([]byte, 1024)
+  conn.Read(buffer)
+
+  if !containsHeader(getHeaders(string(buffer)), "NAME") {
+    conn.Write([]byte("NAME header is missing"))
+    return
+  }
+
+  user.name = getHeader(getHeaders(string(buffer)), "NAME")
+
+  if !containsHeader(getHeaders(string(buffer)), "MSG") {
+    conn.Write([]byte("MSG header is missing"))
+    return
+  }
+
+  if containsUserName(user.name) {
+    conn.Write([]byte("Username is already taken"))
+    return
+  }
+
+  users = append(users, user)
+
+  log.Printf("New connection (%s)", conn.LocalAddr().String())
+  
+  for _, con := range connections {
+    con.Write([]byte(user.name + ": " + getHeader(getHeaders(string(buffer)), "MSG")))
+  }
+
+  log.Printf("Received a message from %s %s (MSG: %s)", user.ip.String(), user.name, getHeader(getHeaders(string(buffer)), "MSG"))
+}
+
+func getPort(config map[string]interface{}) string {
+  port := "5454"
+
+  for k, v := range config {
+    if k == "port" {
+      port = string(v.(string))
+    }
+  }
+
+  return port
 }
 
 func main() {
-    listener, err := net.Listen("tcp", "127.0.0.1:8080")
+  configData, err := os.ReadFile("config.json")
+
+  if err != nil {
+    log.Printf("Error occured while trying to read config.json (%s)", err)
+    return
+  }
+
+  config := make(map[string]interface{}, 0)
+
+  json.Unmarshal(configData, &config)
+
+  port := getPort(config)
+
+  server, err := net.Listen("tcp", ":" + port)
+  users = make([]User, 0)
+  connections = make([]net.Conn, 0)
+
+  if err != nil {
+    log.Fatalf("Unable to bind a TCP server to port %s (%s)", port, err)
+    return 
+  }
+
+  for {
+    conn, err := server.Accept()
 
     if err != nil {
-        fmt.Println(err)
-        return
+      log.Printf("Unable to accept connection (%s)", err)
+      return
     }
 
-    fmt.Println("Listening to 127.0.0.1:8080 for requests")
+    connections = append(connections, conn)
 
-    for {
-        connection, err := listener.Accept()
-
-        if err != nil {
-            continue
-        }
-
-        go handle_connection(connection)
-    }
+    go handleConnection(conn)
+  }
 }

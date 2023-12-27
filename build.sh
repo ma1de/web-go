@@ -1,7 +1,16 @@
-#!/bin/sh
+#!/bin/sh 
+choice=$(printf "build\nrun" | fzf)
 
-if [ -f main ]; then
-    rm -rf main
-fi
+if [ $choice = "build" ]
+then 
+  printf "Building...\n"
+  go build .
+fi 
 
-go build main.go
+if [ $choice = "run" ]
+then 
+  printf "Running...\n"
+  go run .
+fi 
+
+echo "Done!"
