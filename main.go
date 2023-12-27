@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+  "strconv"
 )
 
 type User struct {
@@ -33,6 +34,10 @@ func containsUserName(name string) bool {
   
   for _, us := range users {
     found = us.name == name
+
+    if found {
+      break
+    }
   }
 
   return found
@@ -62,6 +67,10 @@ func containsHeader(headers map[string]string, header string) bool {
 
   for key, _ := range headers {
     found = header == key
+
+    if found {
+      break
+    }
   }
 
   return found
@@ -70,13 +79,18 @@ func containsHeader(headers map[string]string, header string) bool {
 func getHeader(headers map[string]string, header string) string {
   head := ""
 
-  for key, _ := range headers {
+  for key, value := range headers {
     if key == header {
-      head = key
+      head = value
     }
   }
 
-  return head
+  return strings.Replace(strings.Replace(head, "\n", "", -1), "\r", "", -1)
+}
+
+func answer(msg string, code int,  connection net.Conn) {
+  new_msg := "HTTP/1.1 " + strconv.Itoa(code) + "\nContent-Type: text/plain\nContent-Length: " + strconv.Itoa(len(msg)) + "\n\n" + msg
+  connection.Write([]byte(new_msg))
 }
 
 func handleConnection(conn net.Conn) {
@@ -85,27 +99,32 @@ func handleConnection(conn net.Conn) {
     return 
   }
 
+  defer conn.Close()
+
   var user User
   user.ip = conn.LocalAddr()
   user.connected = time.Now().UnixNano() / int64(time.Millisecond)
 
   buffer := make([]byte, 1024)
   conn.Read(buffer)
+  for k, v := range getHeaders(string(buffer)) {
+    log.Printf("%s: %s", k, v)
+  }
 
   if !containsHeader(getHeaders(string(buffer)), "NAME") {
-    conn.Write([]byte("NAME header is missing"))
+    answer("NAME header is missing", 503, conn)
     return
   }
 
   user.name = getHeader(getHeaders(string(buffer)), "NAME")
 
   if !containsHeader(getHeaders(string(buffer)), "MSG") {
-    conn.Write([]byte("MSG header is missing"))
+    answer("MSG header is missing", 503, conn)
     return
   }
 
   if containsUserName(user.name) {
-    conn.Write([]byte("Username is already taken"))
+    answer("Username is already taken", 503, conn)
     return
   }
 
@@ -114,7 +133,7 @@ func handleConnection(conn net.Conn) {
   log.Printf("New connection (%s)", conn.LocalAddr().String())
   
   for _, con := range connections {
-    con.Write([]byte(user.name + ": " + getHeader(getHeaders(string(buffer)), "MSG")))
+    answer(user.name + ": " + getHeader(getHeaders(string(buffer)), "MSG"), 200, con)
   }
 
   log.Printf("Received a message from %s %s (MSG: %s)", user.ip.String(), user.name, getHeader(getHeaders(string(buffer)), "MSG"))
@@ -155,6 +174,8 @@ func main() {
     return 
   }
 
+  log.Printf("Listening for TCP connections (%s)", port)
+  
   for {
     conn, err := server.Accept()
 
